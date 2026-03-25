@@ -1,5 +1,5 @@
 {
-  "name": "my-electron-app",
+  "name": "clipboard-history",
   "version": "1.0.0",
   "main": "src/main/index.js",
   "scripts": {
@@ -12,8 +12,8 @@
     "make": "electron-forge make"
   },
   "build": {
-    "appId": "com.example.clipboardmanager",
-    "productName": "Clipboard Manager",
+    "appId": "com.clipboard-history",
+    "productName": "Clipboard History",
     "asar": true,
     "files": [
       "src/**/*",
