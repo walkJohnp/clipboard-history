@@ -1,0 +1,58 @@
+/* 全局样式 */
+
+/* 确保所有可滚动区域支持触摸板滚动 */
+* {
+  -webkit-overflow-scrolling: touch;
+}
+
+/* 确保 body 和 html 不阻止滚动 */
+html, body, #root {
+  height: 100%;
+  overflow: hidden;
+}
+
+/* 自定义滚动条样式 */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #c1c1c1;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #a8a8a8;
+}
+
+/* Firefox 滚动条 */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #c1c1c1 transparent;
+}
+
+/* 列表容器滚动优化 */
+.clipboard-list-container {
+  overflow-y: auto !important;
+  overflow-x: hidden !important;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+}
+
+/* Ant Design Sider 滚动修复 */
+.ant-layout-sider {
+  display: flex !important;
+  flex-direction: column !important;
+}
+
+.ant-layout-sider-children {
+  display: flex !important;
+  flex-direction: column !important;
+  height: 100% !important;
+  overflow: hidden !important;
+}

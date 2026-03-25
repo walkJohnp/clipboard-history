@@ -1,0 +1,17 @@
+<!-- index.html -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Clipboard History</title>
+  <script>
+    // Polyfill for Electron renderer process with webpack dev server
+    if (typeof global === 'undefined') {
+      window.global = window;
+    }
+  </script>
+</head>
+<body>
+  <div id="root"></div>
+</body>
+</html>

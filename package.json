@@ -1,0 +1,69 @@
+{
+  "name": "my-electron-app",
+  "version": "1.0.0",
+  "main": "src/main/index.js",
+  "scripts": {
+    "start": "electron-forge start",
+    "dev": "concurrently \"npm run dev:renderer\" \"wait-on http://localhost:3001 && npm run dev:main\"",
+    "dev:main": "cross-env NODE_ENV=development electron --inspect=5858 .",
+    "dev:renderer": "cross-env NODE_ENV=development webpack serve --mode development --port 3001",
+    "build": "webpack --mode production",
+    "package": "electron-forge package",
+    "make": "electron-forge make"
+  },
+  "build": {
+    "appId": "com.example.clipboardmanager",
+    "productName": "Clipboard Manager",
+    "asar": true,
+    "files": [
+      "src/**/*",
+      "dist/**/*",
+      "config/**/*",
+      "assets/**/*",
+      "package.json"
+    ]
+  },
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "@babel/core": "^7.27.4",
+    "@babel/preset-env": "^7.27.2",
+    "@babel/preset-react": "^7.27.1",
+    "@electron-forge/cli": "^7.8.1",
+    "@electron-forge/maker-deb": "^7.8.1",
+    "@electron-forge/maker-rpm": "^7.8.1",
+    "@electron-forge/maker-squirrel": "^7.8.1",
+    "@electron-forge/maker-zip": "^7.8.1",
+    "@electron-forge/plugin-auto-unpack-natives": "^7.8.1",
+    "@electron-forge/plugin-fuses": "^7.8.1",
+    "@electron/fuses": "^1.8.0",
+    "babel-loader": "^10.0.0",
+    "concurrently": "^9.2.1",
+    "cross-env": "^10.1.0",
+    "css-loader": "^7.1.2",
+    "electron": "^36.4.0",
+    "events": "^3.3.0",
+    "html-webpack-plugin": "^5.6.3",
+    "style-loader": "^4.0.0",
+    "wait-on": "^9.0.4",
+    "webpack": "^5.99.9",
+    "webpack-cli": "^6.0.1",
+    "webpack-dev-server": "^5.2.2"
+  },
+  "description": "",
+  "dependencies": {
+    "antd": "^5.26.0",
+    "better-sqlite3": "^12.6.2",
+    "dayjs": "^1.11.19",
+    "electron-squirrel-startup": "^1.0.1",
+    "electron-store": "^11.0.2",
+    "lodash.debounce": "^4.0.8",
+    "lodash.throttle": "^4.1.1",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "react-virtualized-auto-sizer": "^2.0.3",
+    "react-window": "^2.2.7",
+    "react-window-infinite-loader": "^2.0.1",
+    "sqlite3": "^5.1.7"
+  }
+}
