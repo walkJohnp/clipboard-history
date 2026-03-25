@@ -1,4 +1,4 @@
-# Clipboard Manager
+# Clipboard History
 
 基于 Electron 的剪贴板历史记录桌面应用。
 
@@ -25,7 +25,7 @@
 ## 项目结构
 
 ```
-my-electron-app/
+clipboard-history/
 ├── src/
 │   ├── main/                    # 主进程代码
 │   │   ├── index.js             # 主入口
@@ -120,7 +120,7 @@ npm run make
 
 ## 数据库
 
-- **位置**: `~/Library/Application Support/my-electron-app/clipboard.db` (macOS)
+- **位置**: `~/Library/Application Support/clipboard-history/clipboard.db` (macOS)
 - **表结构**:
   ```sql
   CREATE TABLE clipboard (
