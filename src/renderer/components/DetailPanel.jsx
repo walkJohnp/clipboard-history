@@ -32,9 +32,13 @@ const DetailPanel = ({ item, onCopy, onUpdate }) => {
 
     // 如果是图片类型且有文件路径，加载原图
     if (item?.type === 'image' && item?.file_path) {
-      window.electronAPI.getImageUrl(item.file_path).then(url => {
-        setImageUrl(url);
-      });
+      if (item.image_url) {
+        setImageUrl(item.image_url);
+      } else {
+        window.electronAPI.getImageUrl(item.file_path).then(url => {
+          setImageUrl(url);
+        });
+      }
     }
   }, [item?.id]);
 
@@ -94,7 +98,7 @@ const DetailPanel = ({ item, onCopy, onUpdate }) => {
   // 处理复制
   const handleCopy = async () => {
     try {
-      await onCopy(item.content);
+      await onCopy(item);
     } catch (err) {
       message.error('Failed to copy: ' + err.message);
     }
@@ -189,7 +193,7 @@ const DetailPanel = ({ item, onCopy, onUpdate }) => {
               lineHeight: 1.6
             }}
           />
-        ) : item.type === 'image' || item.content.startsWith('data:image') ? (
+        ) : item.type === 'image' || item.content?.startsWith('data:image') ? (
           // 图片类型显示
           <div style={{
             padding: 16,
@@ -198,7 +202,7 @@ const DetailPanel = ({ item, onCopy, onUpdate }) => {
             textAlign: 'center'
           }}>
             <img
-              src={imageUrl || item.content}
+              src={imageUrl || item.image_url || item.content}
               alt="Clipboard content"
               style={{
                 maxWidth: '100%',

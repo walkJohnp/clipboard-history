@@ -78,7 +78,7 @@ const ClipboardList = ({
             }}
             onCopy={(e) => {
               e.stopPropagation();
-              onCopy(item.content);
+              onCopy(item);
             }}
             onTogglePin={(e) => {
               e.stopPropagation();

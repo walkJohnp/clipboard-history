@@ -93,8 +93,11 @@ export function useClipboard() {
   };
 
   // 复制
-  const copyItem = async (content) => {
-    await window.electronAPI.copyToClipboard(content);
+  const copyItem = async (item) => {
+    const result = await window.electronAPI.copyItemToClipboard(item);
+    if (result && result.success === false) {
+      throw new Error(result.error || 'Copy failed');
+    }
   };
 
   return {

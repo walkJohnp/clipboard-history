@@ -97,6 +97,44 @@ class DatabaseService {
         console.error('Migration v2 error:', err);
       }
     }
+
+    // 迁移到版本 3 - 图片内容不再存 base64，改为保存文件路径
+    if (version < 3) {
+      console.log('Running migration v3...');
+      try {
+        const rows = this.db.prepare(`
+          SELECT id, file_path
+          FROM clipboard
+          WHERE type = 'image'
+            AND file_path IS NOT NULL
+            AND content LIKE 'data:image%'
+        `).all();
+
+        if (rows.length > 0) {
+          const stmt = this.db.prepare(`
+            UPDATE clipboard
+            SET content = ?, content_hash = ?
+            WHERE id = ?
+          `);
+          const updateMany = this.db.transaction((rows) => {
+            for (const row of rows) {
+              if (!fs.existsSync(row.file_path)) continue;
+
+              const buffer = fs.readFileSync(row.file_path);
+              const hash = `image:${crypto.createHash('md5').update(buffer).digest('hex')}`;
+              stmt.run(row.file_path, hash, row.id);
+            }
+          });
+          updateMany(rows);
+          console.log(`Migrated ${rows.length} image records to file paths`);
+        }
+
+        this.db.pragma('user_version = 3');
+        console.log('Migration v3 completed');
+      } catch (err) {
+        console.error('Migration v3 error:', err);
+      }
+    }
   }
 
   /**
@@ -112,10 +150,11 @@ class DatabaseService {
    * @param {string} source - 来源（可选）
    * @param {string} type - 类型（text/image）
    * @param {string} filePath - 文件路径（图片类型）
+   * @param {string} contentHash - 指定内容哈希（图片使用文件内容哈希）
    * @returns {Object} - 插入结果
    */
-  insert(content, source = null, type = 'text', filePath = null) {
-    const hash = DatabaseService.hashContent(content);
+  insert(content, source = null, type = 'text', filePath = null, contentHash = null) {
+    const hash = contentHash || DatabaseService.hashContent(content);
 
     // 先检查是否已存在（使用哈希）
     const existing = this.db.prepare('SELECT id FROM clipboard WHERE content_hash = ?').get(hash);
@@ -198,6 +237,14 @@ class DatabaseService {
    */
   getByHash(hash) {
     return this.db.prepare('SELECT id FROM clipboard WHERE content_hash = ?').get(hash);
+  }
+
+  /**
+   * 检查指定哈希是否已存在
+   */
+  existsHash(hash) {
+    const row = this.getByHash(hash);
+    return !!row;
   }
 
   /**
@@ -337,7 +384,7 @@ class DatabaseService {
    */
   getLatest() {
     return this.db.prepare(
-      'SELECT content FROM clipboard ORDER BY timestamp DESC LIMIT 1'
+      'SELECT content, type, file_path, content_hash FROM clipboard ORDER BY timestamp DESC LIMIT 1'
     ).get();
   }
 

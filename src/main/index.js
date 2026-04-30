@@ -1,9 +1,24 @@
-const { app, BrowserWindow, ipcMain, clipboard, globalShortcut, dialog } = require('electron');
+const { app, BrowserWindow, ipcMain, clipboard, globalShortcut, dialog, nativeImage, protocol, net } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const { pathToFileURL } = require('url');
 const DatabaseService = require('./services/database-service');
 const ClipboardService = require('./services/clipboard-service');
 const CleanupService = require('./services/cleanup-service');
+
+const IMAGE_PROTOCOL = 'clipboard-image';
+
+protocol.registerSchemesAsPrivileged([
+  {
+    scheme: IMAGE_PROTOCOL,
+    privileges: {
+      standard: true,
+      secure: true,
+      supportFetchAPI: true,
+      stream: true
+    }
+  }
+]);
 
 // electron-store 是 ESM 模块，需要动态导入
 let store;
@@ -41,6 +56,82 @@ let mainWindow = null;
 let db = null;
 let clipboardService = null;
 let cleanupService = null;
+
+function getImagesDir() {
+  return path.resolve(app.getPath('userData'), 'images');
+}
+
+function isImagePathAllowed(filePath) {
+  if (!filePath) return false;
+
+  const imagesDir = getImagesDir();
+  const resolvedPath = path.resolve(filePath);
+  return resolvedPath.startsWith(`${imagesDir}${path.sep}`);
+}
+
+function getImageUrl(filePath) {
+  if (!isImagePathAllowed(filePath) || !fs.existsSync(filePath)) {
+    return null;
+  }
+
+  return `${IMAGE_PROTOCOL}://local-image?path=${encodeURIComponent(path.resolve(filePath))}`;
+}
+
+function serializeClipboardItem(item) {
+  if (!item || item.type !== 'image') {
+    return item;
+  }
+
+  const filePath = item.file_path || item.content;
+  return {
+    ...item,
+    content: filePath,
+    file_path: filePath,
+    image_url: getImageUrl(filePath)
+  };
+}
+
+function setupImageProtocol() {
+  protocol.handle(IMAGE_PROTOCOL, (request) => {
+    const filePath = new URL(request.url).searchParams.get('path');
+    if (!isImagePathAllowed(filePath) || !fs.existsSync(filePath)) {
+      return new Response('Image not found', { status: 404 });
+    }
+
+    return net.fetch(pathToFileURL(filePath).toString());
+  });
+}
+
+function escapePlistString(value) {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;');
+}
+
+function createFilenamesPboardPlist(filePath) {
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<array>
+  <string>${escapePlistString(filePath)}</string>
+</array>
+</plist>`;
+}
+
+function writeImageFileToClipboard(filePath, image) {
+  clipboard.writeImage(image);
+
+  if (process.platform !== 'darwin') {
+    return;
+  }
+
+  const fileUrl = pathToFileURL(filePath).toString();
+  clipboard.writeBuffer('public.file-url', Buffer.from(fileUrl, 'utf8'));
+  clipboard.writeBuffer('NSFilenamesPboardType', Buffer.from(createFilenamesPboardPlist(filePath), 'utf8'));
+}
 
 // 数据库初始化
 function initDatabase() {
@@ -150,19 +241,16 @@ function hideWindow() {
 function setupIpcHandlers() {
   // 获取剪贴板历史（分页）
   ipcMain.handle('clipboard:get-history', (event, page = 1, pageSize = 50, search = '') => {
-    return db.getPage(page, pageSize, search);
+    const result = db.getPage(page, pageSize, search);
+    return {
+      ...result,
+      items: result.items.map(serializeClipboardItem)
+    };
   });
 
   // 获取图片文件 URL
   ipcMain.handle('clipboard:get-image-url', (event, filePath) => {
-    if (!filePath || !fs.existsSync(filePath)) {
-      return null;
-    }
-    // 读取图片为 base64
-    const buffer = fs.readFileSync(filePath);
-    const ext = path.extname(filePath).toLowerCase();
-    const mimeType = ext === '.png' ? 'image/png' : 'image/jpeg';
-    return `data:${mimeType};base64,${buffer.toString('base64')}`;
+    return getImageUrl(filePath);
   });
 
   // 获取总数
@@ -235,6 +323,34 @@ function setupIpcHandlers() {
     }
   });
 
+  // 复制剪贴板历史项并跟踪：图片写入图片剪贴板，文本写入文本剪贴板
+  ipcMain.handle('clipboard:copy-item', (event, item) => {
+    if (item?.type === 'image') {
+      const filePath = item.file_path || item.content;
+      if (!isImagePathAllowed(filePath) || !fs.existsSync(filePath)) {
+        return { success: false, error: 'Image file not found' };
+      }
+
+      const image = nativeImage.createFromPath(filePath);
+      if (image.isEmpty()) {
+        return { success: false, error: 'Image file could not be read' };
+      }
+
+      writeImageFileToClipboard(filePath, image);
+      if (clipboardService) {
+        clipboardService.trackImage(filePath);
+      }
+      return { success: true, type: 'image' };
+    }
+
+    const content = item?.content ?? '';
+    clipboard.writeText(content);
+    if (clipboardService) {
+      clipboardService.trackContent(content);
+    }
+    return { success: true, type: 'text' };
+  });
+
   // 隐藏窗口
   ipcMain.on('window:hide', () => {
     hideWindow();
@@ -278,6 +394,7 @@ function setupIpcHandlers() {
 // 应用启动
 async function main() {
   await app.whenReady();
+  setupImageProtocol();
 
   // 初始化配置存储
   await initStore();
@@ -294,9 +411,10 @@ async function main() {
   // 启动剪贴板服务
   clipboardService = new ClipboardService(db, app.getPath('userData'));
   clipboardService.on('new-content', (data) => {
+    const item = serializeClipboardItem(data);
     // 广播给所有渲染进程
     BrowserWindow.getAllWindows().forEach(win => {
-      win.webContents.send('clipboard:updated', data);
+      win.webContents.send('clipboard:updated', item);
     });
   });
   clipboardService.start();

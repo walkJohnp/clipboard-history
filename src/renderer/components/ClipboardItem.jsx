@@ -37,7 +37,7 @@ const ClipboardItem = memo(({
 
   // 内容类型检测
   const detectContentType = (content) => {
-    if (content.startsWith('data:image')) {
+    if (item.type === 'image' || content.startsWith('data:image')) {
       return 'image';
     }
     if (content.startsWith('http://') || content.startsWith('https://')) {
@@ -149,7 +149,7 @@ const ClipboardItem = memo(({
               marginBottom: 4
             }}>
               <img
-                src={item.content}
+                src={item.image_url || item.content}
                 alt="Thumbnail"
                 style={{
                   width: 40,

@@ -43,7 +43,9 @@ class ClipboardService extends EventEmitter {
       const latest = this.db.getLatest();
       if (latest && latest.content) {
         this.lastContent = latest.content;
-        this.lastHash = this.hashContent(latest.content);
+        this.lastHash = latest.type === 'image' && latest.content_hash?.startsWith('image:')
+          ? latest.content_hash.slice('image:'.length)
+          : this.hashContent(latest.content);
         console.log('[ClipboardService] Restored last content from database');
       }
     } catch (err) {
@@ -154,14 +156,15 @@ class ClipboardService extends EventEmitter {
     try {
       // 获取图片 buffer
       const buffer = image.toPNG();
-      const hash = this.hashContent(buffer.toString('base64'));
+      const hash = this.hashContent(buffer);
+      const contentHash = `image:${hash}`;
 
       if (hash === this.lastHash) {
         return;
       }
 
       // 检查是否已存在
-      if (this.db.exists(`image:${hash}`)) {
+      if (this.db.existsHash(contentHash)) {
         this.lastHash = hash;
         return;
       }
@@ -171,9 +174,8 @@ class ClipboardService extends EventEmitter {
       const filePath = path.join(this.imagesDir, fileName);
       fs.writeFileSync(filePath, buffer);
 
-      // 保存到数据库（存储文件路径和缩略图预览）
-      const thumbnailUrl = image.toDataURL({ scaleFactor: 0.2 }); // 生成缩略图
-      const result = this.db.insert(thumbnailUrl, 'image', 'image', filePath);
+      // 保存到数据库：content 和 file_path 都存文件路径，不存 base64/data URL
+      const result = this.db.insert(filePath, 'image', 'image', filePath, contentHash);
 
       if (result && result.id) {
         this.lastHash = hash;
@@ -187,7 +189,7 @@ class ClipboardService extends EventEmitter {
         // 触发事件
         this.emit('new-content', {
           id: result.id,
-          content: thumbnailUrl,
+          content: filePath,
           timestamp: result.timestamp,
           is_pinned: result.is_pinned || false,
           type: 'image',
@@ -263,6 +265,24 @@ class ClipboardService extends EventEmitter {
     console.log('[ClipboardService] Content tracked:', {
       length: content.length,
       preview: content.substring(0, 50).replace(/\n/g, '\\n')
+    });
+  }
+
+  /**
+   * 手动跟踪图片（用于从历史复制图片时避免重复记录）
+   */
+  trackImage(filePath) {
+    if (!filePath || !fs.existsSync(filePath)) return;
+
+    const buffer = fs.readFileSync(filePath);
+    const hash = this.hashContent(buffer);
+
+    this.lastContent = filePath;
+    this.lastHash = hash;
+
+    console.log('[ClipboardService] Image tracked:', {
+      filePath,
+      size: buffer.length
     });
   }
 

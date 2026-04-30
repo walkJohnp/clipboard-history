@@ -154,9 +154,12 @@ const ClipboardManager = () => {
   }, []);
 
   // ==================== 复制 ====================
-  const handleCopy = useCallback(async (content) => {
+  const handleCopy = useCallback(async (item) => {
     try {
-      await window.electronAPI.copyToClipboard(content);
+      const result = await window.electronAPI.copyItemToClipboard(item);
+      if (result && result.success === false) {
+        throw new Error(result.error || 'Copy failed');
+      }
       notification.success({ message: 'Copied to clipboard' });
 
       // 复制后自动隐藏窗口

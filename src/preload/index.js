@@ -76,6 +76,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
   copyToClipboard: (content) => ipcRenderer.send('clipboard:copy', content),
 
   /**
+   * 复制历史项到剪贴板
+   * @param {Object} item - 剪贴板历史项
+   * @returns {Promise<{success: boolean, type?: string, error?: string}>}
+   */
+  copyItemToClipboard: (item) => ipcRenderer.invoke('clipboard:copy-item', item),
+
+  /**
    * 获取图片文件 URL
    * @param {string} filePath - 图片文件路径
    * @returns {Promise<string>} - file:// URL
