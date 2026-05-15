@@ -1,10 +1,23 @@
 const { FusesPlugin } = require('@electron-forge/plugin-fuses');
 const { FuseV1Options, FuseVersion } = require('@electron/fuses');
+const path = require('path');
+const { execFileSync } = require('child_process');
 
 module.exports = {
   packagerConfig: {
     asar: true,
     name: 'Clipboard History',
+    extraResource: [
+      path.join(__dirname, 'src/native/bin/pasteboard-monitor'),
+    ],
+  },
+  hooks: {
+    generateAssets: async () => {
+      if (process.platform !== 'darwin') return;
+      execFileSync(path.join(__dirname, 'scripts/build-pasteboard-monitor.sh'), {
+        stdio: 'inherit',
+      });
+    },
   },
   rebuildConfig: {},
   makers: [

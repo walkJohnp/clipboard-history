@@ -1,19 +1,22 @@
 const { EventEmitter } = require('events');
-const { clipboard, nativeImage } = require('electron');
+const { clipboard, app } = require('electron');
+const { spawn, spawnSync } = require('child_process');
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 
 /**
  * 剪贴板服务类
- * 使用优化的轮询策略（500ms + 哈希比较）监听剪贴板变化
+ * macOS 使用 NSPasteboard.changeCount 监听变化，避免高频读取剪贴板内容。
+ * 其他平台回退到低频轮询。
  */
 class ClipboardService extends EventEmitter {
   constructor(databaseService, userDataPath) {
     super();
     this.db = databaseService;
     this.imagesDir = path.join(userDataPath, 'images');
-    this.checkInterval = null;
+    this.fallbackTimer = null;
+    this.monitorProcess = null;
     this.isRunning = false;
 
     // 确保图片目录存在
@@ -24,10 +27,10 @@ class ClipboardService extends EventEmitter {
     // 状态
     this.lastContent = '';
     this.lastHash = '';
-    this.lastCheckTime = 0;
+    this.lastChangeCount = null;
 
     // 配置
-    this.checkIntervalMs = 500; // 500ms 检查一次
+    this.fallbackIntervalMs = 3000;
     this.minContentLength = 1;  // 最小内容长度
     this.maxContentLength = 10 * 1024 * 1024; // 最大 10MB
 
@@ -72,13 +75,93 @@ class ClipboardService extends EventEmitter {
     this.isRunning = true;
     console.log('[ClipboardService] Starting monitoring...');
 
-    // 立即检查一次
     this.checkClipboard();
 
-    // 设置定时检查
-    this.checkInterval = setInterval(() => {
+    if (process.platform === 'darwin' && this.startPasteboardMonitor()) {
+      return;
+    }
+
+    this.startFallbackPolling();
+  }
+
+  startPasteboardMonitor() {
+    const monitorPath = this.getPasteboardMonitorPath();
+    if (!monitorPath || !fs.existsSync(monitorPath)) {
+      console.warn('[ClipboardService] Pasteboard monitor not found, using fallback polling');
+      return false;
+    }
+
+    const child = spawn(monitorPath, [], {
+      stdio: ['ignore', 'pipe', 'pipe']
+    });
+
+    this.monitorProcess = child;
+
+    child.stdout.setEncoding('utf8');
+    child.stdout.on('data', (chunk) => {
+      for (const line of chunk.split(/\r?\n/)) {
+        if (!line.trim()) continue;
+
+        const changeCount = Number(line.trim());
+        if (!Number.isFinite(changeCount)) continue;
+
+        if (this.lastChangeCount === null) {
+          this.lastChangeCount = changeCount;
+          continue;
+        }
+
+        if (changeCount !== this.lastChangeCount) {
+          this.lastChangeCount = changeCount;
+          this.checkClipboard();
+        }
+      }
+    });
+
+    child.stderr.setEncoding('utf8');
+    child.stderr.on('data', (chunk) => {
+      console.error('[ClipboardService] Pasteboard monitor error:', chunk.trim());
+    });
+
+    child.on('error', (err) => {
+      console.error('[ClipboardService] Pasteboard monitor failed:', err);
+      this.monitorProcess = null;
+      this.startFallbackPolling();
+    });
+
+    child.on('exit', (code, signal) => {
+      if (this.monitorProcess !== child) return;
+
+      this.monitorProcess = null;
+      if (this.isRunning) {
+        console.warn('[ClipboardService] Pasteboard monitor exited, using fallback polling:', { code, signal });
+        this.startFallbackPolling();
+      }
+    });
+
+    console.log('[ClipboardService] Pasteboard monitor started');
+    return true;
+  }
+
+  getPasteboardMonitorPath() {
+    if (app.isPackaged) {
+      return path.join(process.resourcesPath, 'pasteboard-monitor');
+    }
+
+    const candidates = [
+      path.join(app.getAppPath(), 'src/native/bin/pasteboard-monitor'),
+      path.join(process.cwd(), 'src/native/bin/pasteboard-monitor'),
+      path.join(__dirname, '../../native/bin/pasteboard-monitor')
+    ];
+
+    return candidates.find((candidate) => fs.existsSync(candidate)) || candidates[0];
+  }
+
+  startFallbackPolling() {
+    if (this.fallbackTimer || !this.isRunning) return;
+
+    this.fallbackTimer = setInterval(() => {
       this.checkClipboard();
-    }, this.checkIntervalMs);
+    }, this.fallbackIntervalMs);
   }
 
   /**
@@ -89,9 +172,15 @@ class ClipboardService extends EventEmitter {
 
     this.isRunning = false;
 
-    if (this.checkInterval) {
-      clearInterval(this.checkInterval);
-      this.checkInterval = null;
+    if (this.fallbackTimer) {
+      clearInterval(this.fallbackTimer);
+      this.fallbackTimer = null;
+    }
+
+    if (this.monitorProcess) {
+      const child = this.monitorProcess;
+      this.monitorProcess = null;
+      child.kill();
     }
 
     console.log('[ClipboardService] Stopped monitoring');
@@ -103,48 +192,127 @@ class ClipboardService extends EventEmitter {
    */
   checkClipboard() {
     try {
-      const now = Date.now();
+      const formats = clipboard.availableFormats();
 
-      // 防止过于频繁的检查（防抖）
-      if (now - this.lastCheckTime < this.checkIntervalMs) {
-        return;
-      }
-      this.lastCheckTime = now;
-
-      // 先检查是否有图片
-      const image = clipboard.readImage();
-      if (!image.isEmpty()) {
-        this.handleImageContent(image);
-        return;
+      if (this.hasImageFormat(formats)) {
+        const imageData = this.readImageBuffer(formats);
+        if (imageData) {
+          return this.handleImageContent(imageData);
+        }
       }
 
-      // 读取剪贴板文本
+      // 先读取文本。readText 成本低，且很多图片剪贴板也会附带文件路径/URL 文本。
       const content = clipboard.readText();
 
       // 过滤无效内容
-      if (!this.isValidContent(content)) {
-        return;
+      if (this.isValidContent(content)) {
+        // 快速哈希比较（避免字符串全量比较）
+        const hash = this.hashContent(content);
+        if (hash !== this.lastHash) {
+          // 检查数据库中是否已存在（使用已计算出的哈希）
+          if (this.db.existsHash(hash)) {
+            // 已存在，只更新本地状态
+            this.lastContent = content;
+            this.lastHash = hash;
+            return false;
+          }
+
+          // 新内容，保存到数据库
+          this.handleNewContent(content, hash);
+          return true;
+        }
       }
 
-      // 快速哈希比较（避免字符串全量比较）
-      const hash = this.hashContent(content);
-      if (hash === this.lastHash) {
-        return;
-      }
-
-      // 检查数据库中是否已存在（使用哈希）
-      if (this.db.exists(content)) {
-        // 已存在，只更新本地状态
-        this.lastContent = content;
-        this.lastHash = hash;
-        return;
-      }
-
-      // 新内容，保存到数据库
-      this.handleNewContent(content, hash);
+      return false;
 
     } catch (err) {
       console.error('[ClipboardService] Check error:', err);
+      return false;
+    }
+  }
+
+  hasImageFormat(formats = clipboard.availableFormats()) {
+    return formats.some((format) => {
+      const normalized = format.toLowerCase();
+      return normalized.includes('image')
+        || normalized.includes('png')
+        || normalized.includes('tiff')
+        || normalized.includes('bitmap');
+    });
+  }
+
+  readImageBuffer(formats = clipboard.availableFormats()) {
+    const nativeImageData = this.readNativeImageData();
+    if (nativeImageData) {
+      return nativeImageData;
+    }
+
+    const imageFormats = [
+      { format: 'image/png', extension: 'png', mimeType: 'image/png' },
+      { format: 'public.png', extension: 'png', mimeType: 'image/png' },
+      { format: 'Apple PNG pasteboard type', extension: 'png', mimeType: 'image/png' },
+      { format: 'public.tiff', extension: 'tiff', mimeType: 'image/tiff' },
+      { format: 'NeXT TIFF v4.0 pasteboard type', extension: 'tiff', mimeType: 'image/tiff' }
+    ];
+
+    for (const imageFormat of imageFormats) {
+      if (!formats.includes(imageFormat.format)) continue;
+
+      const buffer = clipboard.readBuffer(imageFormat.format);
+      if (buffer.length > 0) {
+        return { ...imageFormat, buffer };
+      }
+    }
+
+    return null;
+  }
+
+  readNativeImageData() {
+    if (process.platform !== 'darwin') {
+      return null;
+    }
+
+    const monitorPath = this.getPasteboardMonitorPath();
+    if (!monitorPath || !fs.existsSync(monitorPath)) {
+      return null;
+    }
+
+    const result = spawnSync(monitorPath, ['--read-image', this.imagesDir], {
+      encoding: 'utf8',
+      maxBuffer: 1024 * 1024
+    });
+
+    const output = result.stdout?.trim();
+    if (!output) {
+      if (result.error) {
+        console.error('[ClipboardService] Native image read failed:', result.error);
+      }
+      return null;
+    }
+
+    try {
+      const parsed = JSON.parse(output);
+      if (parsed.success !== 'true' || !parsed.filePath) {
+        console.warn('[ClipboardService] Native image read skipped:', parsed.error || 'No image data');
+        return null;
+      }
+
+      const buffer = fs.readFileSync(parsed.filePath);
+      if (buffer.length === 0) {
+        fs.unlinkSync(parsed.filePath);
+        return null;
+      }
+
+      return {
+        buffer,
+        extension: parsed.extension,
+        mimeType: parsed.mimeType,
+        pasteboardType: parsed.pasteboardType,
+        pendingFilePath: parsed.filePath
+      };
+    } catch (err) {
+      console.error('[ClipboardService] Failed to parse native image data:', err);
+      return null;
     }
   }
 
@@ -152,27 +320,32 @@ class ClipboardService extends EventEmitter {
    * 处理图片内容
    * 保存图片到文件系统，数据库存储文件路径
    */
-  handleImageContent(image) {
+  handleImageContent(imageData) {
     try {
-      // 获取图片 buffer
-      const buffer = image.toPNG();
+      const { buffer, extension, mimeType, pendingFilePath } = imageData;
       const hash = this.hashContent(buffer);
       const contentHash = `image:${hash}`;
 
       if (hash === this.lastHash) {
-        return;
+        this.removePendingImage(pendingFilePath);
+        return false;
       }
 
       // 检查是否已存在
       if (this.db.existsHash(contentHash)) {
         this.lastHash = hash;
-        return;
+        this.removePendingImage(pendingFilePath);
+        return false;
       }
 
       // 保存图片到文件系统
-      const fileName = `img_${Date.now()}_${hash.substring(0, 8)}.png`;
+      const fileName = `img_${Date.now()}_${hash.substring(0, 8)}.${extension}`;
       const filePath = path.join(this.imagesDir, fileName);
-      fs.writeFileSync(filePath, buffer);
+      if (pendingFilePath) {
+        fs.renameSync(pendingFilePath, filePath);
+      } else {
+        fs.writeFileSync(filePath, buffer);
+      }
 
       // 保存到数据库：content 和 file_path 都存文件路径，不存 base64/data URL
       const result = this.db.insert(filePath, 'image', 'image', filePath, contentHash);
@@ -183,6 +356,7 @@ class ClipboardService extends EventEmitter {
         console.log('[ClipboardService] New image saved:', {
           id: result.id,
           filePath,
+          mimeType,
           size: buffer.length
         });
 
@@ -195,9 +369,24 @@ class ClipboardService extends EventEmitter {
           type: 'image',
           file_path: filePath
         });
+        return true;
       }
+      return false;
     } catch (err) {
       console.error('[ClipboardService] Failed to save image:', err);
+      return false;
+    }
+  }
+
+  removePendingImage(filePath) {
+    if (!filePath) return;
+
+    try {
+      if (fs.existsSync(filePath) && path.basename(filePath).startsWith('img_pending_')) {
+        fs.unlinkSync(filePath);
+      }
+    } catch (err) {
+      console.error('[ClipboardService] Failed to remove pending image:', err);
     }
   }
 
@@ -226,7 +415,7 @@ class ClipboardService extends EventEmitter {
   handleNewContent(content, hash) {
     try {
       // 保存到数据库
-      const result = this.db.insert(content);
+      const result = this.db.insert(content, null, 'text', null, hash);
 
       if (result && result.id) {
         // 更新本地状态
@@ -310,7 +499,7 @@ class ClipboardService extends EventEmitter {
     }
 
     const hash = this.hashContent(content);
-    if (this.db.exists(content)) {
+    if (this.db.existsHash(hash)) {
       this.trackContent(content);
       return null;
     }
@@ -337,9 +526,10 @@ class ClipboardService extends EventEmitter {
   getStatus() {
     return {
       isRunning: this.isRunning,
-      checkInterval: this.checkIntervalMs,
+      monitor: this.monitorProcess ? 'pasteboard-change-count' : 'fallback-polling',
+      fallbackInterval: this.fallbackIntervalMs,
       lastContentLength: this.lastContent.length,
-      lastCheckTime: this.lastCheckTime
+      lastChangeCount: this.lastChangeCount
     };
   }
 }

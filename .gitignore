@@ -47,6 +47,9 @@ Thumbs.db
 # Electron Forge
 .forge/
 
+# Native helper build outputs
+src/native/bin/
+
 # Test files
 test.json
 coverage/

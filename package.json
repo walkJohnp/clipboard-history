@@ -3,11 +3,14 @@
   "version": "1.0.0",
   "main": "src/main/index.js",
   "scripts": {
+    "prestart": "npm run build:native",
     "start": "electron-forge start",
+    "predev": "npm run build:native",
     "dev": "concurrently \"npm run dev:renderer\" \"wait-on http://localhost:3001 && npm run dev:main\"",
     "dev:main": "cross-env NODE_ENV=development electron --inspect=5858 .",
     "dev:renderer": "cross-env NODE_ENV=development webpack serve --mode development --port 3001",
     "build": "webpack --mode production",
+    "build:native": "scripts/build-pasteboard-monitor.sh",
     "package": "electron-forge package",
     "make": "electron-forge make"
   },
