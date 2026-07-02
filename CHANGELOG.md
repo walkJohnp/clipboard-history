@@ -4,6 +4,11 @@
 
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 
+## [Unreleased]
+
+### 🐛 修复
+- 修复 macOS 当前剪贴板为图片时持续高 CPU 占用的问题：fallback polling 现在先检查 `NSPasteboard.changeCount`，只有剪贴板变化时才读取图片 payload。修复过程见 `docs/IMAGE_CLIPBOARD_CPU_FIX.md`。
+
 ## [2.0.0] - 2026-03-06
 
 ### 🚀 重构架构
