@@ -28,6 +28,8 @@ class ClipboardService extends EventEmitter {
     this.lastContent = '';
     this.lastHash = '';
     this.lastChangeCount = null;
+    this.lastFallbackChangeCount = null;
+    this.lastProcessedChangeCount = null;
 
     // 配置
     this.fallbackIntervalMs = 3000;
@@ -75,7 +77,7 @@ class ClipboardService extends EventEmitter {
     this.isRunning = true;
     console.log('[ClipboardService] Starting monitoring...');
 
-    this.checkClipboard();
+    this.checkClipboard({ changeCount: this.getNativeChangeCount() });
 
     if (process.platform === 'darwin' && this.startPasteboardMonitor()) {
       return;
@@ -112,7 +114,7 @@ class ClipboardService extends EventEmitter {
 
         if (changeCount !== this.lastChangeCount) {
           this.lastChangeCount = changeCount;
-          this.checkClipboard();
+          this.checkClipboard({ changeCount });
         }
       }
     });
@@ -160,6 +162,23 @@ class ClipboardService extends EventEmitter {
     if (this.fallbackTimer || !this.isRunning) return;
 
     this.fallbackTimer = setInterval(() => {
+      // On macOS, avoid re-reading large image payloads while the pasteboard is unchanged.
+      const changeCount = this.getNativeChangeCount();
+      if (changeCount !== null) {
+        if (this.lastFallbackChangeCount === null) {
+          this.lastFallbackChangeCount = changeCount;
+          return;
+        }
+
+        if (changeCount === this.lastFallbackChangeCount) {
+          return;
+        }
+
+        this.lastFallbackChangeCount = changeCount;
+        this.checkClipboard({ changeCount });
+        return;
+      }
+
       this.checkClipboard();
     }, this.fallbackIntervalMs);
   }
@@ -190,14 +209,23 @@ class ClipboardService extends EventEmitter {
    * 检查剪贴板内容
    * 支持文本和图片类型
    */
-  checkClipboard() {
+  checkClipboard(options = {}) {
     try {
+      const changeCount = Number.isFinite(options.changeCount) ? options.changeCount : null;
+      if (changeCount !== null && changeCount === this.lastProcessedChangeCount) {
+        return false;
+      }
+
       const formats = clipboard.availableFormats();
 
       if (this.hasImageFormat(formats)) {
         const imageData = this.readImageBuffer(formats);
         if (imageData) {
-          return this.handleImageContent(imageData);
+          const handled = this.handleImageContent(imageData);
+          if (changeCount !== null) {
+            this.lastProcessedChangeCount = changeCount;
+          }
+          return handled;
         }
       }
 
@@ -214,15 +242,24 @@ class ClipboardService extends EventEmitter {
             // 已存在，只更新本地状态
             this.lastContent = content;
             this.lastHash = hash;
+            if (changeCount !== null) {
+              this.lastProcessedChangeCount = changeCount;
+            }
             return false;
           }
 
           // 新内容，保存到数据库
           this.handleNewContent(content, hash);
+          if (changeCount !== null) {
+            this.lastProcessedChangeCount = changeCount;
+          }
           return true;
         }
       }
 
+      if (changeCount !== null) {
+        this.lastProcessedChangeCount = changeCount;
+      }
       return false;
 
     } catch (err) {
@@ -314,6 +351,30 @@ class ClipboardService extends EventEmitter {
       console.error('[ClipboardService] Failed to parse native image data:', err);
       return null;
     }
+  }
+
+  getNativeChangeCount() {
+    if (process.platform !== 'darwin') {
+      return null;
+    }
+
+    const monitorPath = this.getPasteboardMonitorPath();
+    if (!monitorPath || !fs.existsSync(monitorPath)) {
+      return null;
+    }
+
+    const result = spawnSync(monitorPath, ['--change-count'], {
+      encoding: 'utf8',
+      timeout: 1000,
+      maxBuffer: 1024
+    });
+
+    if (result.error || result.status !== 0) {
+      return null;
+    }
+
+    const changeCount = Number(result.stdout?.trim());
+    return Number.isFinite(changeCount) ? changeCount : null;
   }
 
   /**

@@ -81,6 +81,11 @@ if args.count >= 3 && args[1] == "--read-image" {
   exit(0)
 }
 
+if args.count >= 2 && args[1] == "--change-count" {
+  print(NSPasteboard.general.changeCount)
+  exit(0)
+}
+
 let interval: useconds_t = 250_000
 let pasteboard = NSPasteboard.general
 var lastChangeCount = pasteboard.changeCount
@@ -91,10 +96,12 @@ fflush(stdout)
 while true {
   usleep(interval)
 
-  let changeCount = pasteboard.changeCount
-  if changeCount != lastChangeCount {
-    lastChangeCount = changeCount
-    print(changeCount)
-    fflush(stdout)
+  autoreleasepool {
+    let changeCount = pasteboard.changeCount
+    if changeCount != lastChangeCount {
+      lastChangeCount = changeCount
+      print(changeCount)
+      fflush(stdout)
+    }
   }
 }
